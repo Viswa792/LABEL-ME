@@ -217,7 +217,18 @@ const styles = {
         display: 'flex',
         justifyContent: 'flex-end',
         gap: '1rem',
-    }
+    },
+    jsonCell: {
+        backgroundColor: '#f3f4f6', // A light gray background
+        border: '1px solid #d1d5db',
+    },
+    addCellContainer: {
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: '0.5rem 0',
+        gap: '0.5rem',
+    },
 };
 
 // --- Configuration ---
@@ -647,9 +658,8 @@ const ToolEditor = ({ content, onContentChange }) => {
     const handleAddTool = () => {
         try {
             const newTool = JSON.parse(newToolJson);
-            // Basic validation
-            if (!newTool.name || !newTool.description) {
-                throw new Error("Tool must have a 'name' and 'description'.");
+            if (!newTool.name || !newTool.description || !newTool.parameters) {
+                throw new Error("Tool must have a 'name', 'description', and 'parameters' object.");
             }
             const updatedTools = [...tools, newTool];
             setTools(updatedTools);
@@ -657,7 +667,7 @@ const ToolEditor = ({ content, onContentChange }) => {
             setNewToolJson('');
             setJsonError('');
         } catch (e) {
-            setJsonError(`Invalid JSON or missing fields: ${e.message}`);
+            setJsonError(`Invalid JSON or schema: ${e.message}`);
         }
     };
 
@@ -700,15 +710,48 @@ const ToolEditor = ({ content, onContentChange }) => {
 const ToolCallCreator = ({ availableTools, onAddToolCall }) => {
     const [selectedToolName, setSelectedToolName] = useState('');
     const [args, setArgs] = useState({});
+    const [errors, setErrors] = useState({});
 
     const selectedTool = availableTools.find(t => t.name === selectedToolName);
 
     const handleArgChange = (paramName, value) => {
         setArgs(prev => ({ ...prev, [paramName]: value }));
+        // Clear error on change
+        if (errors[paramName]) {
+            setErrors(prev => {
+                const newErrors = {...prev};
+                delete newErrors[paramName];
+                return newErrors;
+            });
+        }
     };
 
-    const handleAdd = () => {
+    const validateAndAdd = () => {
         if (!selectedTool) return;
+        const newErrors = {};
+        const requiredParams = selectedTool.parameters.required || [];
+
+        requiredParams.forEach(paramName => {
+            if (!args[paramName] || args[paramName].trim() === '') {
+                newErrors[paramName] = 'This field is required.';
+            }
+        });
+
+        Object.entries(selectedTool.parameters.properties).forEach(([paramName, paramSchema]) => {
+            const value = args[paramName];
+            if (value) {
+                if (paramSchema.type === 'number' && isNaN(Number(value))) {
+                    newErrors[paramName] = 'Must be a valid number.';
+                }
+                // Add more type checks as needed (e.g., boolean, integer)
+            }
+        });
+
+        if (Object.keys(newErrors).length > 0) {
+            setErrors(newErrors);
+            return;
+        }
+
         const toolCall = {
             function_name: selectedTool.name,
             arguments: args
@@ -716,6 +759,7 @@ const ToolCallCreator = ({ availableTools, onAddToolCall }) => {
         onAddToolCall(toolCall);
         setSelectedToolName('');
         setArgs({});
+        setErrors({});
     };
 
     return (
@@ -724,7 +768,8 @@ const ToolCallCreator = ({ availableTools, onAddToolCall }) => {
                 value={selectedToolName}
                 onChange={(e) => {
                     setSelectedToolName(e.target.value);
-                    setArgs({}); // Reset args on tool change
+                    setArgs({});
+                    setErrors({});
                 }}
                 style={styles.formInput}
             >
@@ -748,11 +793,12 @@ const ToolCallCreator = ({ availableTools, onAddToolCall }) => {
                                 style={styles.formInput}
                                 placeholder={paramSchema.description}
                             />
+                            {errors[paramName] && <p style={styles.jsonError}>{errors[paramName]}</p>}
                         </div>
                     ))}
                 </div>
             )}
-            <button onClick={handleAdd} disabled={!selectedToolName} style={{...styles.btn, ...styles.btnPrimary}}>Save Tool Call</button>
+            <button onClick={validateAndAdd} disabled={!selectedToolName} style={{...styles.btn, ...styles.btnPrimary}}>Save Tool Call</button>
         </div>
     );
 };
@@ -826,101 +872,119 @@ const EditableCell = ({ cell, index, onContentChange, onRemove, isTrainer, avail
     };
 
     const renderEditableContent = () => {
-        switch (cell.cell_type) {
-            case 'tool_definition':
-                return <ToolEditor content={content} onContentChange={handleToolContentChange} />;
-            case 'tool_output':
-                 return (
-                    <textarea
-                        value={content}
-                        onChange={handleJsonTextChange}
-                        style={styles.cellTextarea}
-                        placeholder={`Enter JSON output for the tool calls...`}
-                    />
-                );
-            case 'assistant':
-                return (
-                    <div>
-                        <textarea
-                            value={content.text || ''}
-                            onChange={handleTextChange}
-                            style={styles.cellTextarea}
-                            placeholder="Enter assistant response..."
-                        />
-                        {content.tool_calls?.map((tc, i) => (
-                             <div key={i} style={styles.toolCallDisplay}>
-                                <div style={styles.toolCallDisplayHeader}>
-                                    <strong>Tool Call: {tc.function_name}</strong>
-                                    <button onClick={() => handleRemoveToolCall(i)} style={{...styles.btn, ...styles.btnXs, ...styles.btnDanger}}>Remove</button>
-                                </div>
-                                <pre style={styles.schemaDisplay}>{JSON.stringify(tc.arguments, null, 2)}</pre>
-                            </div>
-                        ))}
-                        <div style={styles.toolCallContainer}>
-                            {showToolCreator ? (
-                                <>
-                                  <ToolCallCreator availableTools={availableTools} onAddToolCall={handleAddToolCall} />
-                                  <button onClick={() => setShowToolCreator(false)} style={{...styles.btn, ...styles.btnMuted, ...styles.mt2}}>Cancel</button>
-                                </>
-                            ) : (
-                                <button onClick={() => setShowToolCreator(true)} style={{...styles.btn, ...styles.btnSecondary}}>Add Tool Call</button>
-                            )}
-                        </div>
+        const cellStyle = (cell.cell_type === 'tool_definition' || cell.cell_type === 'tool_output') ? {...styles.cell, ...styles.jsonCell} : styles.cell;
+
+        return (
+            <div style={cellStyle}>
+                <div style={styles.cellHeader}>
+                    <span style={styles.cellType}>{cell.cell_type.replace('_', ' ')}</span>
+                     <div style={styles.cellControls}>
+                        {isTrainer && <button onClick={() => setIsEditing(!isEditing)} style={{...styles.btn, ...styles.btnXs, ...styles.btnMuted}}>{isEditing ? 'View' : 'Edit'}</button>}
+                        {isTrainer && <button onClick={() => onRemove(index)} style={styles.removeCellBtn}>Remove</button>}
                     </div>
-                );
-            default: // Handles user, system_prompt, thought, thinking
-                return (
-                    <textarea
-                        value={content}
-                        onChange={handleTextChange}
-                        style={styles.cellTextarea}
-                        placeholder={`Enter content for ${cell.cell_type}...`}
-                    />
-                );
-        }
+                </div>
+                {(() => {
+                    switch (cell.cell_type) {
+                        case 'tool_definition':
+                            return <ToolEditor content={content} onContentChange={handleToolContentChange} />;
+                        case 'tool_output':
+                             return (
+                                <textarea
+                                    value={content}
+                                    onChange={handleJsonTextChange}
+                                    style={styles.cellTextarea}
+                                    placeholder={`Enter JSON output for the tool calls...`}
+                                />
+                            );
+                        case 'assistant':
+                            return (
+                                <div>
+                                    <textarea
+                                        value={content.text || ''}
+                                        onChange={handleTextChange}
+                                        style={styles.cellTextarea}
+                                        placeholder="Enter assistant response..."
+                                    />
+                                    {content.tool_calls?.map((tc, i) => (
+                                         <div key={i} style={styles.toolCallDisplay}>
+                                            <div style={styles.toolCallDisplayHeader}>
+                                                <strong>Tool Call: {tc.function_name}</strong>
+                                                <button onClick={() => handleRemoveToolCall(i)} style={{...styles.btn, ...styles.btnXs, ...styles.btnDanger}}>Remove</button>
+                                            </div>
+                                            <pre style={styles.schemaDisplay}>{JSON.stringify(tc.arguments, null, 2)}</pre>
+                                        </div>
+                                    ))}
+                                    <div style={styles.toolCallContainer}>
+                                        {showToolCreator ? (
+                                            <>
+                                              <ToolCallCreator availableTools={availableTools} onAddToolCall={handleAddToolCall} />
+                                              <button onClick={() => setShowToolCreator(false)} style={{...styles.btn, ...styles.btnMuted, ...styles.mt2}}>Cancel</button>
+                                            </>
+                                        ) : (
+                                            <button onClick={() => setShowToolCreator(true)} style={{...styles.btn, ...styles.btnSecondary}}>Add Tool Call</button>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        default: // Handles user, system_prompt, thought, thinking
+                            return (
+                                <textarea
+                                    value={content}
+                                    onChange={handleTextChange}
+                                    style={styles.cellTextarea}
+                                    placeholder={`Enter content for ${cell.cell_type}...`}
+                                />
+                            );
+                    }
+                })()}
+            </div>
+        );
     };
 
     const renderReadOnlyContent = () => {
         const simpleTextCells = ['user', 'system_prompt', 'thought', 'thinking'];
-        if (cell.cell_type === 'tool_definition') {
-            const tools = JSON.parse(content || '[]');
-            return (
-                <div>
-                    {tools.map((tool, i) => <JsonSchemaDisplay key={i} schema={tool} requiredFields={tool.parameters?.required} />)}
+        const cellStyle = (cell.cell_type === 'tool_definition' || cell.cell_type === 'tool_output') ? {...styles.cell, ...styles.jsonCell} : styles.cell;
+
+        return (
+             <div style={cellStyle}>
+                <div style={styles.cellHeader}>
+                    <span style={styles.cellType}>{cell.cell_type.replace('_', ' ')}</span>
+                     <div style={styles.cellControls}>
+                        {isTrainer && <button onClick={() => setIsEditing(!isEditing)} style={{...styles.btn, ...styles.btnXs, ...styles.btnMuted}}>{isEditing ? 'View' : 'Edit'}</button>}
+                    </div>
                 </div>
-            );
-        }
-         if (isComplexAssistant) {
-            return (
-                <div>
-                    <div style={styles.markdownContainer}><ReactMarkdown>{content.text || ''}</ReactMarkdown></div>
-                    {content.tool_calls?.map((tc, i) => (
-                        <div key={i} style={styles.toolCallDisplay}>
-                            <strong>Tool Call: {tc.function_name}</strong>
-                            <pre style={styles.schemaDisplay}>{JSON.stringify(tc.arguments, null, 2)}</pre>
-                        </div>
-                    ))}
-                </div>
-            );
-        }
-         if (simpleTextCells.includes(cell.cell_type)) {
-             return <div style={styles.markdownContainer}><ReactMarkdown>{content}</ReactMarkdown></div>;
-         }
-        return <pre style={{whiteSpace: 'pre-wrap', fontFamily: 'monospace'}}>{content}</pre>;
+                {(() => {
+                    if (cell.cell_type === 'tool_definition') {
+                        const tools = JSON.parse(content || '[]');
+                        return (
+                            <div>
+                                {tools.map((tool, i) => <JsonSchemaDisplay key={i} schema={tool} requiredFields={tool.parameters?.required} />)}
+                            </div>
+                        );
+                    }
+                     if (isComplexAssistant) {
+                        return (
+                            <div>
+                                <div style={styles.markdownContainer}><ReactMarkdown>{content.text || ''}</ReactMarkdown></div>
+                                {content.tool_calls?.map((tc, i) => (
+                                    <div key={i} style={styles.toolCallDisplay}>
+                                        <strong>Tool Call: {tc.function_name}</strong>
+                                        <pre style={styles.schemaDisplay}>{JSON.stringify(tc.arguments, null, 2)}</pre>
+                                    </div>
+                                ))}
+                            </div>
+                        );
+                    }
+                     if (simpleTextCells.includes(cell.cell_type)) {
+                         return <div style={styles.markdownContainer}><ReactMarkdown>{content}</ReactMarkdown></div>;
+                     }
+                    return <pre style={{whiteSpace: 'pre-wrap', fontFamily: 'monospace'}}>{content}</pre>;
+                })()}
+            </div>
+        );
     };
 
-    return (
-        <div style={styles.cell}>
-            <div style={styles.cellHeader}>
-                <span style={styles.cellType}>{cell.cell_type.replace('_', ' ')}</span>
-                 <div style={styles.cellControls}>
-                    {isTrainer && <button onClick={() => setIsEditing(!isEditing)} style={{...styles.btn, ...styles.btnXs, ...styles.btnMuted}}>{isEditing ? 'View' : 'Edit'}</button>}
-                    {isTrainer && <button onClick={() => onRemove(index)} style={styles.removeCellBtn}>Remove</button>}
-                </div>
-            </div>
-            {isTrainer && isEditing ? renderEditableContent() : renderReadOnlyContent()}
-        </div>
-    );
+    return isTrainer && isEditing ? renderEditableContent() : renderReadOnlyContent();
 };
 
 // --- Helper to generate placeholder from schema ---
@@ -930,10 +994,22 @@ const generatePlaceholderFromSchema = (schema) => {
     }
     const placeholder = {};
     for (const key in schema.properties) {
-        // This can be expanded to handle nested objects if needed
         placeholder[key] = '...'; // User will fill this value
     }
     return placeholder;
+};
+
+const AddCellButtons = ({ onAdd, isVisible }) => {
+    if (!isVisible) return null;
+    return (
+        <div style={styles.addCellContainer}>
+            <button onClick={() => onAdd('user')} style={{...styles.btn, ...styles.btnXs, ...styles.btnPrimary}}>+ User</button>
+            <button onClick={() => onAdd('assistant')} style={{...styles.btn, ...styles.btnXs, ...styles.btnSuccess}}>+ Assistant</button>
+            <button onClick={() => onAdd('thought')} style={{...styles.btn, ...styles.btnXs, ...styles.btnSecondary}}>+ Thought</button>
+            <button onClick={() => onAdd('thinking')} style={{...styles.btn, ...styles.btnXs, ...styles.btnSecondary, backgroundColor: '#d946ef'}}>+ Thinking</button>
+            <button onClick={() => onAdd('tool_output')} style={{...styles.btn, ...styles.btnXs, ...styles.btnWarning}}>+ Tool Output</button>
+        </div>
+    );
 };
 
 
@@ -988,7 +1064,7 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
                         if (toolDef && toolDef.returns) {
                             return generatePlaceholderFromSchema(toolDef.returns);
                         }
-                        return {}; // Fallback if no 'returns' schema is found
+                        return {};
                     });
                     const placeholderOutputString = JSON.stringify(placeholderOutputs, null, 2);
 
@@ -1003,13 +1079,13 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
                     }
                 }
             } catch (e) {
-                console.error("Error processing assistant cell for tool output generation:", e);
+                console.error("Error processing assistant cell:", e);
             }
         }
         setCells(updatedCells);
     };
 
-    const addCell = (type) => {
+    const addCell = (type, afterIndex = -1) => {
         let newContent = '';
         if (type === 'tool_definition') newContent = '[]';
         if (type === 'assistant') newContent = JSON.stringify({ text: '', tool_calls: [] });
@@ -1018,17 +1094,15 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
         const newCell = { cell_type: type, content: newContent };
         const updatedCells = [...cells];
 
-        if (type === 'system_prompt') {
-            updatedCells.unshift(newCell); // Add to the beginning
-        } else if (type === 'tool_definition') {
+        if (type === 'system_prompt' || type === 'tool_definition') {
             const sysPromptIndex = updatedCells.findIndex(c => c.cell_type === 'system_prompt');
-            if (sysPromptIndex > -1) {
-                updatedCells.splice(sysPromptIndex + 1, 0, newCell); // Add after system prompt
+            if (type === 'tool_definition' && sysPromptIndex > -1) {
+                updatedCells.splice(sysPromptIndex + 1, 0, newCell);
             } else {
-                updatedCells.unshift(newCell); // Or at the beginning if no system prompt
+                updatedCells.unshift(newCell);
             }
         } else {
-            updatedCells.push(newCell); // Add conversation cells to the end
+             updatedCells.splice(afterIndex + 1, 0, newCell);
         }
         setCells(updatedCells);
     };
@@ -1100,8 +1174,7 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
                 </div>
             )}
 
-            <div style={{...styles.cellsContainer, gap: '1.5rem'}}>
-                {/* System Prompt Section */}
+            <div style={{...styles.cellsContainer, gap: '0.5rem'}}>
                 {systemPromptCell ? (
                     <EditableCell
                         key={`cell-${cells.findIndex(c => c === systemPromptCell)}`}
@@ -1114,13 +1187,12 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
                     />
                 ) : (
                     isTrainer && (
-                        <button onClick={() => addCell('system_prompt')} style={{...styles.btn, ...styles.btnPrimary}}>
+                        <button onClick={() => addCell('system_prompt')} style={{...styles.btn, ...styles.btnPrimary, ...styles.mb4}}>
                             Add System Prompt
                         </button>
                     )
                 )}
 
-                {/* Tool Definition Section */}
                 {toolDefinitionCell ? (
                     <EditableCell
                         key={`cell-${cells.findIndex(c => c === toolDefinitionCell)}`}
@@ -1133,7 +1205,7 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
                     />
                 ) : (
                     isTrainer && (
-                        <button onClick={() => addCell('tool_definition')} style={{...styles.btn, ...styles.btnTeal}}>
+                        <button onClick={() => addCell('tool_definition')} style={{...styles.btn, ...styles.btnTeal, ...styles.mb4}}>
                             Add Tools
                         </button>
                     )
@@ -1146,20 +1218,25 @@ const TaskEditor = ({ taskId, navigateToDashboard }) => {
                 <div style={styles.dividerLine}></div>
             </div>
 
-            {isTrainer && (
-                <div style={{...styles.trainerActions, marginBottom: '1.5rem'}}>
-                    <button onClick={() => addCell('user')} style={{...styles.btn, ...styles.btnPrimary}}>Add User</button>
-                    <button onClick={() => addCell('assistant')} style={{...styles.btn, ...styles.btnSuccess}}>Add Assistant</button>
-                    <button onClick={() => addCell('thought')} style={{...styles.btn, ...styles.btnSecondary}}>Add Thought</button>
-                    <button onClick={() => addCell('thinking')} style={{...styles.btn, ...styles.btnSecondary, backgroundColor: '#d946ef'}}>Add Thinking</button>
-                    <button onClick={() => addCell('tool_output')} style={{...styles.btn, ...styles.btnWarning}}>Add Tool Output</button>
-                </div>
-            )}
+            <AddCellButtons onAdd={(type) => addCell(type, cells.length - 1)} isVisible={isTrainer && conversationCells.length === 0} />
 
             <div style={styles.cellsContainer}>
-                {conversationCells.map((cell) => {
+                {conversationCells.map((cell, convIndex) => {
                      const originalIndex = cells.findIndex(c => c === cell);
-                     return <EditableCell key={`cell-${originalIndex}`} cell={cell} index={originalIndex} onContentChange={handleCellChange} onRemove={removeCell} isTrainer={isTrainer} availableTools={availableTools} />
+                     const showAddButtons = isTrainer && !(cell.cell_type === 'assistant' && conversationCells[convIndex + 1]?.cell_type === 'tool_output');
+                     return (
+                        <React.Fragment key={`fragment-${originalIndex}`}>
+                            <EditableCell
+                                cell={cell}
+                                index={originalIndex}
+                                onContentChange={handleCellChange}
+                                onRemove={removeCell}
+                                isTrainer={isTrainer}
+                                availableTools={availableTools}
+                            />
+                            <AddCellButtons onAdd={(type) => addCell(type, originalIndex)} isVisible={showAddButtons} />
+                        </React.Fragment>
+                     );
                 })}
             </div>
 
